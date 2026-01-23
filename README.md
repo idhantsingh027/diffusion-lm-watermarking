@@ -29,7 +29,7 @@
 
 - **D3PM-style forward process** using token masking
 - **Timestep-conditioned denoiser** for $p_\theta(x_0 \mid x_t, t)$
-- **D3PM reverse process** with monotonic unmasking (no re-masking)
+- **D3PM reverse process** with monotonic unmasking
 - **Stochastic sampling** for watermark-friendly generation
 - **Mask inspection** to visualize forward corruption on real data
 
