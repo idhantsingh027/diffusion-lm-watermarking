@@ -81,7 +81,7 @@ python models/diffusion_lm.py inspect-mask \
   --steps 5 \
   --min_mask_prob 0.2 \
   --max_mask_prob 0.8 \
-  --t 4
+  --t 2
 ```
 
 ## 📁 Project Structure
