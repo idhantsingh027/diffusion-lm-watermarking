@@ -41,6 +41,39 @@ class TrainConfig:
 	use_timestep_conditioning: bool = True
 
 
+def resolve_device(requested: str) -> str:
+	"""Return a usable torch device string.
+
+	If the user asks for CUDA but this environment doesn't have a CUDA-enabled
+	PyTorch build (or no GPU runtime), we fall back to CPU with a clear warning
+	instead of crashing during `model.to('cuda')`.
+	"""
+	device = (requested or "cpu").strip()
+	if device.startswith("cuda"):
+		try:
+			if not torch.cuda.is_available():
+				print(
+					"WARNING: --device cuda requested but CUDA is not available in this runtime. "
+					"Falling back to CPU. If you're on Colab, enable GPU (Runtime → Change runtime type) "
+					"and install CUDA PyTorch (pip install -r requirements-colab.txt)."
+				)
+				return "cpu"
+			# Sanity-check that the requested CUDA device is actually usable.
+			torch.empty(1).to(device)
+		except Exception as e:
+			print(
+				f"WARNING: Requested device '{device}' is not usable ({e!s}). "
+				"Falling back to CPU."
+			)
+			return "cpu"
+	if device == "mps":
+		mps_ok = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+		if not mps_ok:
+			print("WARNING: --device mps requested but MPS is not available. Falling back to CPU.")
+			return "cpu"
+	return device
+
+
 def set_seed(seed: int) -> None:
 	random.seed(seed)
 	torch.manual_seed(seed)
@@ -204,6 +237,7 @@ class TimestepConditionedBertForMaskedLM(nn.Module):
 
 	@classmethod
 	def from_pretrained(cls, ckpt_or_name: str, *, num_steps: int, device: str) -> "TimestepConditionedBertForMaskedLM":
+		device = resolve_device(device)
 		base = BertForMaskedLM.from_pretrained(ckpt_or_name)
 		obj = cls(base, num_steps=num_steps)
 		path = os.path.join(ckpt_or_name, cls.TIME_EMBED_FILENAME)
@@ -447,6 +481,7 @@ def main() -> None:
 	p_inspect.add_argument("--device", default=TrainConfig.device)
 
 	args = parser.parse_args()
+	args.device = resolve_device(getattr(args, "device", "cpu"))
 
 	if args.cmd == "train":
 		cfg = TrainConfig(

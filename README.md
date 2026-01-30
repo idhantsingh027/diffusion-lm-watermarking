@@ -55,6 +55,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Google Colab (GPU)
+
+If you're running in Colab and want GPU training, install the CUDA-enabled PyTorch build:
+```bash
+pip install -r requirements-colab.txt
+```
+
+Sanity check (should print `True` and a CUDA version):
+```bash
+python -c "import torch; print('cuda_available=', torch.cuda.is_available(), 'torch_cuda=', torch.version.cuda)"
+```
+
 ## 💻 Usage
 
 ### 1) Quick smoke-test training
