@@ -29,7 +29,7 @@
 
 - **D3PM-style forward process** using token masking
 - **Timestep-conditioned denoiser** for $p_\theta(x_0 \mid x_t, t)$
-- **D3PM reverse process** with monotonic unmasking
+- **D3PM reverse process** with monotonic unmasking (no re-masking)
 - **Stochastic sampling** for watermark-friendly generation
 - **Mask inspection** to visualize forward corruption on real data
 
@@ -41,7 +41,16 @@ git clone https://github.com/idhantsingh027/diffusion-lm-watermarking.git
 cd diffusion-lm-watermarking
 ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment (recommended):
+```bash
+python -m venv .venv
+# Windows
+.\.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
@@ -81,7 +90,7 @@ python models/diffusion_lm.py inspect-mask \
   --steps 5 \
   --min_mask_prob 0.2 \
   --max_mask_prob 0.8 \
-  --t 2
+  --t 4
 ```
 
 ## 📁 Project Structure
