@@ -21,6 +21,23 @@ Watermarking embeds a signature with minimal quality loss and stronger robustnes
 Diffusion LMs generate via iterative denoising (not left-to-right), so classical watermarking does not directly apply.
 We design watermarking schemes that respect the trade-offs between detectability, robustness, and text quality.
 
+## Work done so far (current repo status)
+
+This repository now contains a working, minimal discrete masking-diffusion language model baseline:
+
+- A D3PM-style **forward corruption** process using cumulative token masking $p_t$.
+- A **timestep-conditioned denoiser** (BERT-MLM + learned timestep embedding) targeting $p_\theta(x_0 \mid x_t, t)$.
+- A D3PM-style **reverse process** with monotonic unmasking (no re-masking) and multinomial sampling (temperature + top-k).
+- A notebook workflow that streams logs and includes a **step-by-step reconstruction demo**:
+	- single-step denoising ($x_t, t \to \hat{x}_0$)
+	- iterative denoising trace (prints intermediate $x_{t-1}$ at each step)
+
+Practical notes:
+
+- After very short training (smoke tests), generations can be weak/noisy (loss often around ~7). **To be improved**.
+- More training improves reconstruction quality, reduces punctuation/stopword spam, and yields more grammatical samples.
+- Checkpoints are large and are kept local (ignored by git).
+
 ## New insights (implementation-focused)
 
 ### Timestep conditioning
