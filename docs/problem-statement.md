@@ -93,6 +93,10 @@ python models/diffusion_lm.py train \
 - Runs a tiny CPU training loop (2 batches).
 - Verifies data loading, masking, and the training step.
 
+**Recommended next step**
+
+- Run longer (e.g., 5 epochs) so sampling/reconstruction quality becomes visible.
+
 **Example output**
 
 ```
@@ -117,6 +121,11 @@ python models/diffusion_lm.py sample \
 
 - Generates a 48‑token sample using the D3PM reverse process.
 - Uses temperature sampling and top‑k filtering.
+
+**Interpretation**
+
+- If you only trained a few batches, output can look like frequent-token noise.
+- Lowering temperature (e.g., 0.7) and/or lowering top-k (e.g., 20) often makes samples cleaner.
 
 **Note**
 
@@ -148,6 +157,16 @@ python models/diffusion_lm.py inspect-mask \
 
 - Shows how the forward process masks tokens at a fixed timestep $t$.
 - Uses a real dataset example for visibility.
+
+## How to view reconstruction step-by-step
+
+After training, the easiest way to *see* reconstruction is the notebook workflow in `notebooks/training_v1.ipynb`:
+
+- Build $x_t$ by masking a clean sentence at some timestep $t$.
+- Run **single-step denoising** to get $\hat{x}_0$ in one shot.
+- Run **iterative denoising** to print the intermediate reconstructions at each timestep.
+
+This is the key intuition behind diffusion LMs: the model gradually fills in content as the mask rate decreases.
 
 **Example output**
 
