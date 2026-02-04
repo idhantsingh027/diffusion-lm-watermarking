@@ -31,6 +31,7 @@ class TrainConfig:
 	weight_decay: float = 0.0
 	epochs: int = 1
 	max_train_batches: int = 0
+	log_every: int = 50
 	warmup_steps: int = 0
 	steps: int = 25
 	min_mask_prob: float = 0.15
@@ -356,6 +357,7 @@ def generate_d3pm(
 def train(cfg: TrainConfig) -> None:
 	set_seed(cfg.seed)
 	os.makedirs(cfg.output_dir, exist_ok=True)
+	log_every = max(int(cfg.log_every), 0)
 
 	tokenizer = BertTokenizerFast.from_pretrained(cfg.model_name)
 	dataset = WikiTextDataset(split=cfg.split, max_length=cfg.max_length)
@@ -373,6 +375,7 @@ def train(cfg: TrainConfig) -> None:
 
 	for epoch in range(cfg.epochs):
 		running = 0.0
+		seen = 0
 		for i, input_ids in enumerate(loader, start=1):
 			input_ids = input_ids.to(cfg.device)
 			if tokenizer.pad_token_id is None:
@@ -402,13 +405,21 @@ def train(cfg: TrainConfig) -> None:
 			optimizer.zero_grad(set_to_none=True)
 
 			running += float(loss.item())
-			if i % 50 == 0:
-				avg = running / 50.0
-				running = 0.0
-				print(f"epoch={epoch+1} step={i}/{len(loader)} loss={avg:.4f}")
+			seen += 1
+			# If this is a smoke-test run, stop after N batches *before* resetting any log window.
 			if cfg.max_train_batches and i >= cfg.max_train_batches:
-				print(f"Stopping early: max_train_batches={cfg.max_train_batches}")
+				avg = running / float(max(seen, 1))
+				print(
+					f"Stopping early: max_train_batches={cfg.max_train_batches} (avg_loss_over_last_{seen}_batches={avg:.4f})",
+					flush=True,
+				)
 				break
+
+			if log_every and i % log_every == 0:
+				avg = running / float(seen)
+				print(f"epoch={epoch+1} step={i}/{len(loader)} loss={avg:.4f}", flush=True)
+				running = 0.0
+				seen = 0
 
 		# Save each epoch
 		epoch_dir = os.path.join(cfg.output_dir, f"epoch-{epoch+1}")
@@ -419,7 +430,7 @@ def train(cfg: TrainConfig) -> None:
 			model.save_pretrained(epoch_dir)
 		tokenizer.save_pretrained(epoch_dir)
 
-	print(f"Saved checkpoints to: {cfg.output_dir}")
+	print(f"Saved checkpoints to: {cfg.output_dir}", flush=True)
 
 
 def main() -> None:
@@ -438,6 +449,12 @@ def main() -> None:
 		type=int,
 		default=TrainConfig.max_train_batches,
 		help="Smoke-test helper: stop after this many batches per epoch (0 = no limit).",
+	)
+	p_train.add_argument(
+		"--log_every",
+		type=int,
+		default=TrainConfig.log_every,
+		help="Print a running average loss every N batches (0 = disable).",
 	)
 	p_train.add_argument("--steps", type=int, default=TrainConfig.steps)
 	p_train.add_argument("--min_mask_prob", type=float, default=TrainConfig.min_mask_prob)
@@ -492,6 +509,7 @@ def main() -> None:
 			lr=args.lr,
 			epochs=args.epochs,
 			max_train_batches=args.max_train_batches,
+			log_every=args.log_every,
 			steps=args.steps,
 			min_mask_prob=args.min_mask_prob,
 			max_mask_prob=args.max_mask_prob,

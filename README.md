@@ -71,6 +71,8 @@ python -c "import torch; print('cuda_available=', torch.cuda.is_available(), 'to
 
 ### 1) Quick smoke-test training
 This is a **local sanity check** (CPU, a couple of batches). Full training is intended to run in **Google Colab**.
+
+**Checkpoint note:** the repo includes a *trained but weak* checkpoint (loss ~7 in early training), so early samples can look noisy. More training makes reconstructions and generations noticeably more fluent.
 ```bash
 python models/diffusion_lm.py train \
   --epochs 1 \
@@ -122,6 +124,7 @@ diffusion-lm-watermarking/
 ## 🧪 Notes
 
 - This repo currently implements a **D3PM-style masking diffusion baseline**.
+- Model weights under `checkpoints/` are large and stored via **Git LFS**. If you clone and see pointer files, install Git LFS (`git lfs install`) and run `git lfs pull`.
 - Watermarking integration (logit bias + detection) is intended as the next step.
 
 ## 🤝 Contributing
