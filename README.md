@@ -83,6 +83,56 @@ python models/diffusion_lm.py train \
   --device cpu
 ```
 
+### 1b) Curriculum training (recommended to reach lower loss)
+
+If you train directly with very hard masking (e.g. `--max_mask_prob 0.90`), the loss can plateau around ~7 for a long time on CPU.
+A practical way to drive the loss down is to **start with BERT-like masking** (`min=max=0.15`), then resume and ramp the masking up.
+
+Observed (in-notebook run, CPU):
+- **Direct hard-masking training** (`--min_mask_prob 0.15 --max_mask_prob 0.90`, `--epochs 3`, `--max_train_batches 200`) often stayed around **~7 loss**.
+- **Stage 1 easy masking** (`--min_mask_prob 0.15 --max_mask_prob 0.15`, `--epochs 3`) reached about **~2.75 loss** (e.g. `loss≈2.7368` at step ~1410).
+
+Stage 1 (easy / BERT-like masking):
+```bash
+python models/diffusion_lm.py train \
+  --device cpu \
+  --output_dir checkpoints/bert-mlm-curriculum-easy \
+  --epochs 3 \
+  --batch_size 8 \
+  --grad_accum_steps 4 \
+  --lr 5e-5 \
+  --weight_decay 0.01 \
+  --warmup_steps 200 \
+  --max_length 64 \
+  --steps 25 \
+  --min_mask_prob 0.15 \
+  --max_mask_prob 0.15 \
+  --max_train_batches 0 \
+  --log_every 10
+```
+
+Your exact curve depends on hardware and batch settings.
+
+Stage 2 (resume + harder diffusion masking):
+```bash
+python models/diffusion_lm.py train \
+  --device cpu \
+  --model_name checkpoints/bert-mlm-curriculum-easy/epoch-3 \
+  --output_dir checkpoints/bert-mlm-diffusion-baseline \
+  --epochs 5 \
+  --batch_size 8 \
+  --grad_accum_steps 4 \
+  --lr 5e-5 \
+  --weight_decay 0.01 \
+  --warmup_steps 200 \
+  --max_length 64 \
+  --steps 25 \
+  --min_mask_prob 0.15 \
+  --max_mask_prob 0.90 \
+  --max_train_batches 0 \
+  --log_every 10
+```
+
 ### 2) Sample text (D3PM reverse)
 **One-line description:** runs the D3PM reverse process to generate a 48‑token sample from a *diffusion‑trained checkpoint* using temperature sampling and top‑k filtering.
 ```bash
