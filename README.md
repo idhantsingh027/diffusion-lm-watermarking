@@ -110,7 +110,7 @@ A practical way to drive the loss down is to **start with BERT-like masking** (`
 Observed (in-notebook run, CPU):
 - **Stage 1 easy masking** (`--min_mask_prob 0.15 --max_mask_prob 0.15`, `--epochs 3`) reached about **~2.73 loss** (e.g. `loss≈2.7368` at step ~1410).
 
-Stage 1 (easy / BERT-like masking):
+Stage 1 (easy / BERT-like masking - 15%):
 ```bash
 python models/diffusion_lm.py train \
   --device cpu \
@@ -131,7 +131,7 @@ python models/diffusion_lm.py train \
 
 Your exact curve depends on hardware and batch settings.
 
-Stage 2 (resume + harder diffusion masking):
+Stage 2 (resume + harder diffusion masking - 90%):
 ```bash
 python models/diffusion_lm.py train \
   --device cpu \
