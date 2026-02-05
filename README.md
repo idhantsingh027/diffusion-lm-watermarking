@@ -72,7 +72,6 @@ python -c "import torch; print('cuda_available=', torch.cuda.is_available(), 'to
 ### 1) Quick smoke-test training
 This is a **local sanity check** (CPU, a couple of batches). Full training is intended to run in **Google Colab**.
 
-**Checkpoint note:** the repo includes a *trained but weak* checkpoint (loss ~7 in early training), so early samples can look noisy. More training makes reconstructions and generations noticeably more fluent.
 ```bash
 python models/diffusion_lm.py train \
   --epochs 1 \
@@ -83,14 +82,33 @@ python models/diffusion_lm.py train \
   --device cpu
 ```
 
-### 1b) Curriculum training (recommended to reach lower loss)
+### 1b) Training with hard masking (loss around ~7)
 
-If you train directly with very hard masking (e.g. `--max_mask_prob 0.90`), the loss can plateau around ~7 for a long time on CPU.
+**Direct hard-masking training** (`--min_mask_prob 0.15 --max_mask_prob 0.90`, `--epochs 3`, `--max_train_batches 200`) often stayed around **~7 loss**.
+
+```bash
+python models/diffusion_lm.py train \
+  --device cpu \
+  --epochs 3 \
+  --batch_size 8 \
+  --grad_accum_steps 4 \
+  --lr 5e-5 \
+  --weight_decay 0.01 \
+  --warmup_steps 200 \
+  --max_length 64 \
+  --steps 25 \
+  --min_mask_prob 0.15 \
+  --max_mask_prob 0.90 \
+  --max_train_batches 200 \
+  --log_every 10
+```
+
+### 1c) Curriculum training (recommended to reach lower loss)
+
 A practical way to drive the loss down is to **start with BERT-like masking** (`min=max=0.15`), then resume and ramp the masking up.
 
 Observed (in-notebook run, CPU):
-- **Direct hard-masking training** (`--min_mask_prob 0.15 --max_mask_prob 0.90`, `--epochs 3`, `--max_train_batches 200`) often stayed around **~7 loss**.
-- **Stage 1 easy masking** (`--min_mask_prob 0.15 --max_mask_prob 0.15`, `--epochs 3`) reached about **~2.75 loss** (e.g. `loss≈2.7368` at step ~1410).
+- **Stage 1 easy masking** (`--min_mask_prob 0.15 --max_mask_prob 0.15`, `--epochs 3`) reached about **~2.73 loss** (e.g. `loss≈2.7368` at step ~1410).
 
 Stage 1 (easy / BERT-like masking):
 ```bash
