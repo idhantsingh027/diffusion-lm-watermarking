@@ -25,20 +25,20 @@ from data.dataset import WikiTextDataset
 class TrainConfig:
 	model_name: str = "bert-base-uncased"
 	split: str = "train"
-	max_length: int = 64
-	batch_size: int = 16
-	lr: float = 5e-5
-	weight_decay: float = 0.0
+	max_length: int = 128
+	batch_size: int = 64
+	lr: float = 2e-5
+	weight_decay: float = 0.01
 	epochs: int = 1
 	max_train_batches: int = 0
 	log_every: int = 50
-	warmup_steps: int = 0
-	steps: int = 25
+	warmup_steps: int = 500
+	steps: int = 100
 	min_mask_prob: float = 0.15
-	max_mask_prob: float = 0.95
+	max_mask_prob: float = 0.70
 	output_dir: str = "checkpoints/bert-mlm-diffusion-baseline"
 	seed: int = 1234
-	device: str = "cuda" if torch.cuda.is_available() else "cpu"
+	device: str = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 	use_timestep_conditioning: bool = True
 
 
@@ -192,6 +192,9 @@ class TimestepConditionedBertForMaskedLM(nn.Module):
 		self.num_steps = int(num_steps)
 		hidden = self.base.config.hidden_size
 		self.time_embed = nn.Embedding(self.num_steps + 1, hidden)
+		nn.init.normal_(self.time_embed.weight, mean=0.0, std=0.02)
+		self.time_ln = nn.LayerNorm(hidden)
+		self.base.cls.apply(self.base._init_weights)
 
 	def forward(
 		self,
@@ -212,6 +215,7 @@ class TimestepConditionedBertForMaskedLM(nn.Module):
 		# Build token embeddings as BERT would, then add timestep embedding.
 		emb = self.base.bert.embeddings(input_ids=input_ids)
 		emb = emb + self.time_embed(t).unsqueeze(1)
+		emb = self.time_ln(emb)
 
 		outputs = self.base.bert(
 			inputs_embeds=emb,
@@ -233,6 +237,7 @@ class TimestepConditionedBertForMaskedLM(nn.Module):
 		payload = {
 			"num_steps": self.num_steps,
 			"time_embed_state_dict": self.time_embed.state_dict(),
+			"time_ln_state_dict": self.time_ln.state_dict(),
 		}
 		torch.save(payload, os.path.join(save_directory, self.TIME_EMBED_FILENAME))
 
@@ -247,6 +252,8 @@ class TimestepConditionedBertForMaskedLM(nn.Module):
 			obj.num_steps = int(payload.get("num_steps", num_steps))
 			obj.time_embed = nn.Embedding(obj.num_steps + 1, obj.base.config.hidden_size)
 			obj.time_embed.load_state_dict(payload["time_embed_state_dict"])
+			if "time_ln_state_dict" in payload:
+				obj.time_ln.load_state_dict(payload["time_ln_state_dict"])
 		obj.to(device)
 		return obj
 
@@ -368,6 +375,11 @@ def train(cfg: TrainConfig) -> None:
 	else:
 		model = BertForMaskedLM.from_pretrained(cfg.model_name).to(cfg.device)
 	model.train()
+
+	# Freeze word/position/token-type embeddings — only fine-tune 
+	# transformer layers and the time embedding head
+	for param in model.base.bert.embeddings.parameters():
+		param.requires_grad = False
 
 	optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 	total_steps = cfg.epochs * len(loader)
