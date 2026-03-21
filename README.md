@@ -32,6 +32,7 @@
 - **D3PM reverse process** with monotonic unmasking (no re-masking)
 - **Stochastic sampling** for watermark-friendly generation
 - **Mask inspection** to visualize forward corruption on real data
+- **Comprehensive evaluation**: reconstruction accuracy + GPT-2 perplexity metrics
 
 ## 🛠️ Installation
 
@@ -175,6 +176,29 @@ python models/diffusion_lm.py inspect-mask \
   --t 4
 ```
 
+### 4) training_v3.ipynb - 2-Stage Curriculum
+Implements initial curriculum learning with MDLM improvements:
+- **Stage 1**: 15% masking, 5 epochs — learns basic token reconstruction
+- **Stage 2**: 50% masking, 5 epochs — learns to denoise higher noise levels
+
+**Results achieved:**
+- Reconstruction accuracy: **69.7%** (target: >30%)
+- GPT-2 perplexity (generated samples fluency): **151.9** (target: <500)
+- Final best: **65.8% accuracy, 187.7 perplexity**
+
+Features:
+- Low-discrepancy timestep sampling (MDLM)
+- Zero masking probabilities (prevents predicting [MASK] tokens)
+- Gradient accumulation (effective batch size 128)
+- Per-epoch checkpoints for watermarking experiments
+- GPT-2 perplexity evaluation for generation quality
+
+### 5) training_v4.ipynb - 3-Stage Continuation (Future Work 🔥)
+Continues from v5 best checkpoint with advanced techniques:
+- **Stage 3**: 30% masking, 4 epochs — fills the gap progressively
+- **Stage 4**: 70% masking, 5 epochs — pushes to high noise levels
+- **Stage 5**: 70% masking + embeddings unfrozen, 3 epochs — fine-tunes everything
+
 ## 📁 Project Structure
 
 ```
@@ -207,4 +231,6 @@ Contributions are welcome. Please open an issue or pull request with clear detai
 ## 🌟 Acknowledgments
 
 - Diffusion LM literature (D3PM, Masked diffusion)
+- **MDLM**: Sahoo et al., "Simple and Effective Masked Diffusion Language Models" (NeurIPS 2024)
+- **dLLM**: Zhou, "Discrete Diffusion Language Models" (2025)
 - Hugging Face Transformers & Datasets
