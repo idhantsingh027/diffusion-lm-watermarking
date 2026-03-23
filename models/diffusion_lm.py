@@ -26,17 +26,21 @@ class TrainConfig:
 	model_name: str = "bert-base-uncased"
 	split: str = "train"
 	max_length: int = 128
-	batch_size: int = 64
+	batch_size: int = 32
 	lr: float = 2e-5
 	weight_decay: float = 0.01
-	epochs: int = 1
+	epochs: int = 5
 	max_train_batches: int = 0
 	log_every: int = 50
 	warmup_steps: int = 500
 	steps: int = 100
 	min_mask_prob: float = 0.15
 	max_mask_prob: float = 0.70
-	output_dir: str = "checkpoints/bert-mlm-diffusion-baseline"
+	grad_accum_steps: int = 4
+	dataset_version: str = "wikitext-2-raw-v1"
+	lr_schedule: str = "cosine"
+	unfreeze_embeddings: bool = False
+	output_dir: str = "checkpoints/bert-mlm-diffusion-v5"
 	seed: int = 1234
 	device: str = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 	use_timestep_conditioning: bool = True
@@ -81,12 +85,67 @@ def set_seed(seed: int) -> None:
 	torch.cuda.manual_seed_all(seed)
 
 
+def get_scheduler(
+	optimizer,
+	schedule: str,
+	warmup_steps: int,
+	total_steps: int,
+):
+	"""
+	Build LR scheduler.
+	'linear': linear warmup then linear decay (original)
+	'cosine': linear warmup then cosine decay (MDLM)
+	Cosine prevents LR dropping too fast mid-training.
+	"""
+	if schedule == "cosine":
+		from torch.optim.lr_scheduler import (
+			LambdaLR, CosineAnnealingLR, SequentialLR
+		)
+		warmup = LambdaLR(
+			optimizer,
+			lr_lambda=lambda step: min(
+				1.0, step / max(warmup_steps, 1)
+			)
+		)
+		cosine = CosineAnnealingLR(
+			optimizer,
+			T_max=max(total_steps - warmup_steps, 1),
+			eta_min=1e-7,
+		)
+		return SequentialLR(
+			optimizer,
+			schedulers=[warmup, cosine],
+			milestones=[warmup_steps],
+		)
+	else:
+		return get_linear_schedule_with_warmup(
+			optimizer,
+			num_warmup_steps=warmup_steps,
+			num_training_steps=total_steps,
+		)
+
+
 def mask_prob_for_t(t: torch.Tensor, *, steps: int, min_p: float, max_p: float) -> torch.Tensor:
 	"""Linear schedule from min_p..max_p over timesteps 1..steps."""
 	if steps <= 1:
 		return torch.full_like(t, fill_value=max_p, dtype=torch.float32)
 	frac = (t.float() - 1.0) / float(steps - 1)
 	return min_p + frac * (max_p - min_p)
+
+
+def sample_timesteps_low_discrepancy(
+	bsz: int, steps: int, device: str
+) -> torch.Tensor:
+	"""
+	Low-discrepancy sampler for diffusion timesteps.
+	Ensures all noise levels are evenly covered each batch.
+	From MDLM (Sahoo et al. 2024) — more stable than uniform.
+	"""
+	offset = torch.rand(1).item()
+	t_float = [(offset + i / bsz) % 1.0 for i in range(bsz)]
+	t_int = [max(1, min(steps, int(v * steps) + 1)) 
+	         for v in t_float]
+	return torch.tensor(t_int, device=device, dtype=torch.long)
 
 
 def make_noised_batch(
@@ -107,7 +166,7 @@ def make_noised_batch(
 	pθ(x0 | x_t, t) (or pθ(x_{t-1} | x_t, t) in a stricter formulation).
 	"""
 	bsz, seqlen = input_ids.shape
-	t = torch.randint(low=1, high=steps + 1, size=(bsz,), device=device)
+	t = sample_timesteps_low_discrepancy(bsz, steps, device)
 	p = mask_prob_for_t(t, steps=steps, min_p=min_mask_prob, max_p=max_mask_prob)  # [B]
 
 	special = torch.zeros_like(input_ids, dtype=torch.bool)
@@ -131,6 +190,7 @@ def make_noised_batch(
 
 	labels = input_ids.clone()
 	labels[~mask] = -100  # ignore non-masked positions
+	labels[labels == tokenizer.mask_token_id] = -100
 	return x_t, labels, t
 
 
@@ -361,13 +421,92 @@ def generate_d3pm(
 	return " ".join(text.split())
 
 
+@torch.no_grad()
+def reconstruction_accuracy(
+	model: "TimestepConditionedBertForMaskedLM",
+	tokenizer: BertTokenizerFast,
+	sentences: list[str],
+	*,
+	mask_prob: float = 0.15,
+	steps: int = 100,
+	device: str,
+) -> dict:
+	"""
+	Evaluate masked token reconstruction accuracy.
+	
+	For each sentence:
+	  1. Tokenize it
+	  2. Mask mask_prob fraction of tokens (forward process at t=1)
+	  3. Run ONE denoising step at t=1 (lowest noise level)
+	  4. Compare predictions at masked positions to ground truth
+	
+	Returns top-1 accuracy on masked positions.
+	This directly measures if the model can fill in masked words.
+	From dLLM evaluation methodology.
+	"""
+	model.eval()
+	correct = 0
+	total = 0
+
+	for sentence in sentences:
+		enc = tokenizer(
+			sentence,
+			return_tensors="pt",
+			truncation=True,
+			max_length=128,
+			padding="max_length",
+		)
+		input_ids = enc["input_ids"].to(device)  # [1, L]
+
+		# Forward process: mask at t=1 (lowest noise = 15%)
+		x_t, mask = make_noised_example(
+			input_ids[0],
+			tokenizer=tokenizer,
+			t_int=1,
+			steps=steps,
+			min_mask_prob=mask_prob,
+			max_mask_prob=mask_prob,
+			device=device,
+		)
+		if not mask.any():
+			continue
+
+		x_t_batch = x_t.unsqueeze(0)
+		t_tensor = torch.tensor([1], device=device)
+
+		out = model(input_ids=x_t_batch, t=t_tensor)
+		logits = out["logits"]  # [1, L, vocab]
+
+		# Get predictions at masked positions
+		pred_ids = logits[0].argmax(dim=-1)  # [L]
+		
+		masked_positions = mask.nonzero(as_tuple=True)[0]
+		for pos in masked_positions:
+			pred = int(pred_ids[pos].item())
+			gold = int(input_ids[0, pos].item())
+			if pred == gold:
+				correct += 1
+			total += 1
+
+	model.train()
+
+	if total == 0:
+		return {"accuracy": 0.0, "correct": 0, "total": 0}
+
+	return {
+		"accuracy": round(correct / total, 4),
+		"correct": correct,
+		"total": total,
+	}
+
+
 def train(cfg: TrainConfig) -> None:
 	set_seed(cfg.seed)
 	os.makedirs(cfg.output_dir, exist_ok=True)
 	log_every = max(int(cfg.log_every), 0)
 
 	tokenizer = BertTokenizerFast.from_pretrained(cfg.model_name)
-	dataset = WikiTextDataset(split=cfg.split, max_length=cfg.max_length)
+	dataset = WikiTextDataset(split=cfg.split, max_length=cfg.max_length, dataset_version=cfg.dataset_version)
 	loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
 
 	if cfg.use_timestep_conditioning:
@@ -376,14 +515,24 @@ def train(cfg: TrainConfig) -> None:
 		model = BertForMaskedLM.from_pretrained(cfg.model_name).to(cfg.device)
 	model.train()
 
-	# Freeze word/position/token-type embeddings — only fine-tune 
-	# transformer layers and the time embedding head
-	for param in model.base.bert.embeddings.parameters():
-		param.requires_grad = False
+	# Freeze word/position/token-type embeddings
+	if not cfg.unfreeze_embeddings:
+		for param in model.base.bert.embeddings.parameters():
+			param.requires_grad = False
+	else:
+		# Unfreeze — used in later training stages
+		for param in model.base.bert.embeddings.parameters():
+			param.requires_grad = True
+		print("Embeddings unfrozen for fine-tuning.")
 
 	optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 	total_steps = cfg.epochs * len(loader)
-	scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=cfg.warmup_steps, num_training_steps=total_steps)
+	scheduler = get_scheduler(
+		optimizer,
+		schedule=cfg.lr_schedule,
+		warmup_steps=cfg.warmup_steps,
+		total_steps=total_steps,
+	)
 
 	for epoch in range(cfg.epochs):
 		running = 0.0
@@ -409,14 +558,17 @@ def train(cfg: TrainConfig) -> None:
 			else:
 				out = model(input_ids=x_t, attention_mask=attention_mask, labels=labels)
 				loss = out.loss
+			
+			loss = loss / cfg.grad_accum_steps
 			loss.backward()
 
-			torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-			optimizer.step()
-			scheduler.step()
-			optimizer.zero_grad(set_to_none=True)
+			if i % cfg.grad_accum_steps == 0:
+				torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+				optimizer.step()
+				scheduler.step()
+				optimizer.zero_grad(set_to_none=True)
 
-			running += float(loss.item())
+			running += float(loss.item()) * cfg.grad_accum_steps
 			seen += 1
 			# If this is a smoke-test run, stop after N batches *before* resetting any log window.
 			if cfg.max_train_batches and i >= cfg.max_train_batches:
@@ -468,12 +620,30 @@ def main() -> None:
 		default=TrainConfig.log_every,
 		help="Print a running average loss every N batches (0 = disable).",
 	)
+	p_train.add_argument("--warmup_steps", type=int, default=TrainConfig.warmup_steps)
 	p_train.add_argument("--steps", type=int, default=TrainConfig.steps)
 	p_train.add_argument("--min_mask_prob", type=float, default=TrainConfig.min_mask_prob)
 	p_train.add_argument("--max_mask_prob", type=float, default=TrainConfig.max_mask_prob)
+	p_train.add_argument("--dataset_version", default=TrainConfig.dataset_version)
 	p_train.add_argument("--output_dir", default=TrainConfig.output_dir)
 	p_train.add_argument("--seed", type=int, default=TrainConfig.seed)
 	p_train.add_argument("--device", default=TrainConfig.device)
+	p_train.add_argument("--grad_accum_steps", type=int, default=TrainConfig.grad_accum_steps)
+	p_train.add_argument(
+		"--lr_schedule",
+		default=TrainConfig.lr_schedule,
+		choices=["linear", "cosine"],
+		help="LR schedule: linear or cosine decay "
+		     "after warmup. Cosine recommended (MDLM).",
+	)
+	p_train.add_argument(
+		"--unfreeze_embeddings",
+		action=argparse.BooleanOptionalAction,
+		default=TrainConfig.unfreeze_embeddings,
+		help="If set, unfreezes BERT embedding layer. "
+		     "Use in later training stages after model "
+		     "has converged.",
+	)
 	p_train.add_argument(
 		"--use_timestep_conditioning",
 		action=argparse.BooleanOptionalAction,
@@ -509,6 +679,13 @@ def main() -> None:
 	p_inspect.add_argument("--seed", type=int, default=1234)
 	p_inspect.add_argument("--device", default=TrainConfig.device)
 
+	p_eval = sub.add_parser("evaluate")
+	p_eval.add_argument("--ckpt", required=True)
+	p_eval.add_argument("--steps", type=int, default=100)
+	p_eval.add_argument("--device", default=TrainConfig.device)
+	p_eval.add_argument("--n_eval", type=int, default=50)
+	p_eval.add_argument("--n_samples", type=int, default=5)
+
 	args = parser.parse_args()
 	args.device = resolve_device(getattr(args, "device", "cpu"))
 
@@ -522,9 +699,14 @@ def main() -> None:
 			epochs=args.epochs,
 			max_train_batches=args.max_train_batches,
 			log_every=args.log_every,
+			warmup_steps=args.warmup_steps,
 			steps=args.steps,
 			min_mask_prob=args.min_mask_prob,
 			max_mask_prob=args.max_mask_prob,
+			grad_accum_steps=args.grad_accum_steps,
+			dataset_version=args.dataset_version,
+			lr_schedule=args.lr_schedule,
+			unfreeze_embeddings=args.unfreeze_embeddings,
 			output_dir=args.output_dir,
 			seed=args.seed,
 			device=args.device,
@@ -555,6 +737,45 @@ def main() -> None:
 			top_k=args.top_k,
 		)
 		print(text)
+		return
+
+	if args.cmd == "evaluate":
+		tokenizer = BertTokenizerFast.from_pretrained(args.ckpt)
+		model = TimestepConditionedBertForMaskedLM.from_pretrained(
+			args.ckpt, num_steps=args.steps, device=args.device)
+		model.eval()
+
+		# Load validation sentences
+		from data.dataset import WikiTextDataset
+		ds = WikiTextDataset(
+			split="validation", 
+			max_length=128,
+			dataset_version="wikitext-2-raw-v1"
+		)
+		sentences = [ds.texts[i] for i in 
+		             range(min(args.n_eval, len(ds)))]
+
+		# Reconstruction accuracy
+		result = reconstruction_accuracy(
+			model, tokenizer, sentences,
+			mask_prob=0.15, steps=args.steps, 
+			device=args.device
+		)
+		print(f"\nReconstruction accuracy: "
+		      f"{result['accuracy']*100:.1f}%  "
+		      f"({result['correct']}/{result['total']} tokens)")
+
+		# Sample generation
+		print(f"\nGenerated samples:")
+		for i in range(args.n_samples):
+			text = generate_d3pm(
+				model, tokenizer,
+				length=48, steps=args.steps,
+				min_mask_prob=0.15, max_mask_prob=0.50,
+				device=args.device,
+				temperature=1.0, top_k=50,
+			)
+			print(f"  [{i+1}] {text}")
 		return
 
 	if args.cmd == "inspect-mask":
