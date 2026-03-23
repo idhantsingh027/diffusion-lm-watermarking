@@ -194,7 +194,7 @@ Features:
 - GPT-2 perplexity evaluation for generation quality
 
 ### 5) training_v4.ipynb - 3-Stage Continuation (Future Work 🔥)
-Continues from v5 best checkpoint with advanced techniques:
+Continues from v3 best checkpoint with advanced techniques:
 - **Stage 3**: 30% masking, 4 epochs — fills the gap progressively
 - **Stage 4**: 70% masking, 5 epochs — pushes to high noise levels
 - **Stage 5**: 70% masking + embeddings unfrozen, 3 epochs — fine-tunes everything
