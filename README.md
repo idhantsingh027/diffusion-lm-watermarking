@@ -193,11 +193,43 @@ Features:
 - Per-epoch checkpoints for watermarking experiments
 - GPT-2 perplexity evaluation for generation quality
 
-### 5) training_v4.ipynb - 3-Stage Continuation (Future Work 🔥)
-Continues from v3 best checkpoint with advanced techniques:
-- **Stage 3**: 30% masking, 4 epochs — fills the gap progressively
-- **Stage 4**: 70% masking, 5 epochs — pushes to high noise levels
-- **Stage 5**: 70% masking + embeddings unfrozen, 3 epochs — fine-tunes everything
+### 5) training_v4.ipynb - 3-Stage Continuation
+Implements a cleaned-data, 3-stage curriculum with cosine warmup and stage-wise evaluation:
+- **Stage 1**: 15% masking, 5 epochs
+- **Stage 2**: 50% masking, 8 epochs
+- **Stage 3**: 75% masking, 6 epochs
+
+Canonical checkpoint for downstream work:
+- `checkpoints/dlm-stage3/best`
+
+Per-stage training eval (live, end-of-training RNG):
+
+| Stage | Mask prob | Epochs | LR | PPL | Recon acc |
+|---|---:|---:|---:|---:|---:|
+| Stage 1 | 0.15 | 5 | 2e-5 | 186.3 | 64.6% (1695/2623) |
+| Stage 2 | 0.50 | 8 | 1e-5 | 148.4 | 64.3% (1609/2504) |
+| Stage 3 | 0.75 | 6 | 5e-6 | 109.1 | 65.6% (1681/2561) |
+
+Controlled sweep (5 fixed seeds, n_recon=200, n_gen=20):
+
+| Checkpoint | Recon accuracy (mean ± std) | GPT-2 PPL (mean ± std) |
+|---|---:|---:|
+| `stage1_best` | 64.13% ± 1.18% | 146.04 ± 13.11 |
+| `stage2_best` | 64.41% ± 1.14% | 134.03 ± 13.94 |
+| `stage3_best` | 64.38% ± 0.88% | 122.78 ± 15.32 |
+
+Controlled sweep (5 random seeds, n_recon=200, n_gen=20):
+- Seeds used: `1880, 3556, 6303, 8611, 8734`
+
+| Checkpoint | Recon accuracy (mean ± std) | GPT-2 PPL (mean ± std) |
+|---|---:|---:|
+| `stage1_best` | 63.83% ± 0.75% | 152.56 ± 16.23 |
+| `stage2_best` | 63.91% ± 0.74% | 147.96 ± 20.86 |
+| `stage3_best` | 63.92% ± 0.66% | 130.04 ± 9.35 |
+
+Interpretation:
+- Across controlled sweeps, Stage 3 consistently gives the best or near-best reconstruction and the best fluency (lowest PPL) on average.
+- Stage 3 is preferred as the primary checkpoint for downstream watermarking experiments.
 
 ## 📁 Project Structure
 
