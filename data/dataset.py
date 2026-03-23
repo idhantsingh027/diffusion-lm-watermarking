@@ -54,6 +54,55 @@ def clean_wikitext(text: str) -> str:
     
     return text
 
+
+def is_clean_sentence(text: str) -> bool:
+    """
+    Filter out citation-heavy and low-quality sentences
+    that cause token noise in generated text.
+    
+    Removes:
+    - Very short texts (< 8 words)
+    - Citation-heavy text (too many brackets/colons)
+    - Number-heavy text (reference lists)
+    - Texts with excessive quote marks
+    - Texts that are mostly punctuation
+    """
+    if not text:
+        return False
+    
+    words = text.split()
+    
+    # Must have at least 8 words
+    if len(words) < 8:
+        return False
+    
+    # Skip citation-heavy text
+    # e.g. Smith, J. (2003). "Title". Journal, 4(2)
+    punct_chars = sum(1 for c in text if c in '()[]{}":;')
+    if punct_chars / max(len(text), 1) > 0.12:
+        return False
+    
+    # Skip texts with too many standalone numbers
+    # e.g. "1 2 3 4 5 pp. 1-5"
+    num_words = sum(1 for w in words 
+                   if w.strip('.,;:()[]').isdigit())
+    if num_words / max(len(words), 1) > 0.20:
+        return False
+    
+    # Skip texts with excessive quote marks
+    # e.g. " " ",, ' "
+    quote_count = text.count('"') + text.count("'")
+    if quote_count / max(len(words), 1) > 1.5:
+        return False
+    
+    # Skip texts that are mostly punctuation/symbols
+    alpha_chars = sum(1 for c in text if c.isalpha())
+    if alpha_chars / max(len(text), 1) < 0.55:
+        return False
+    
+    return True
+
+
 class WikiTextDataset:
     def __init__(self, split="train", max_length=32, clean_markup=True, dataset_version="wikitext-103-raw-v1"):
         """
@@ -74,12 +123,16 @@ class WikiTextDataset:
         # Filter empty texts and optionally clean markup
         if self.clean_markup:
             self.texts = [clean_wikitext(t) for t in self.dataset["text"] if len(t.strip()) > 0]
-            # Remove any texts that became empty after cleaning
+            # Remove empty texts
             self.texts = [t for t in self.texts if len(t.strip()) > 0]
+            # Remove citation-heavy and noisy texts
+            before = len(self.texts)
+            self.texts = [t for t in self.texts if is_clean_sentence(t)]
+            after = len(self.texts)
             dataset_name = "WikiText-2" if "2" in dataset_version else "WikiText-103"
-            print(f"📝 {dataset_name} {split}: {len(self.texts)} samples after cleaning")
+            print(f"📝 {dataset_name} {split}: {after} samples after cleaning (removed {before - after} noisy samples)")
         else:
-            self.texts = [t for t in self.dataset["text"] if len(t.strip()) > 0]
+            self.texts = [t for t in self.dataset["text"] if len(t.strip()) > 0 and len(t.split()) >= 8]
 
     def __len__(self):
         return len(self.texts)
