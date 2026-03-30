@@ -241,6 +241,11 @@ diffusion-lm-watermarking/
 │   └── problem-statement.md
 ├── models/
 │   └── diffusion_lm.py
+├── notebooks/
+│   └── training_v1.ipynb
+│   └── training_v2.ipynb
+│   └── training_v3.ipynb
+│   └── training_v4.ipynb
 ├── requirements.txt
 └── README.md
 ```
