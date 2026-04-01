@@ -231,6 +231,18 @@ Interpretation:
 - Across controlled sweeps, Stage 3 consistently gives the best or near-best reconstruction and the best fluency (lowest PPL) on average.
 - Stage 3 is preferred as the primary checkpoint for downstream watermarking experiments.
 
+**Improved decoding (temp=0.7, top_k=20)**:
+
+With optimized decoding parameters, Stage 3 achieves significantly better fluency:
+
+| Checkpoint | Recon accuracy (mean ± std) | GPT-2 PPL (mean ± std) |
+|---|---:|---:|
+| `stage1_best` | 64.00% ± 0.93% | 78.48 ± 18.48 |
+| `stage2_best` | 64.54% ± 1.00% | 60.16 ± 15.26 |
+| `stage3_best` | 64.65% ± 0.81% | **59.46 ± 9.61** |
+
+Key improvement: **PPL dropped from ~130 to ~59** (55% reduction) by using lower temperature and smaller top_k.
+
 ## 📁 Project Structure
 
 ```
