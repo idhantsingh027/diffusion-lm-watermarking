@@ -66,6 +66,7 @@ def is_clean_sentence(text: str) -> bool:
     - Number-heavy text (reference lists)
     - Texts with excessive quote marks
     - Texts that are mostly punctuation
+    - Texts with >2 consecutive punctuation marks
     """
     if not text:
         return False
@@ -98,6 +99,12 @@ def is_clean_sentence(text: str) -> bool:
     # Skip texts that are mostly punctuation/symbols
     alpha_chars = sum(1 for c in text if c.isalpha())
     if alpha_chars / max(len(text), 1) < 0.55:
+        return False
+    
+    # Skip texts with >2 consecutive punctuation marks
+    # e.g. "... ,,, !!!" — these cause punctuation artifacts
+    import re
+    if re.search(r'[.,;:!?\-_"\'\[\]()]{3,}', text):
         return False
     
     return True
