@@ -48,6 +48,11 @@ class WatermarkConfig:
     
     # Z-score threshold for watermark detection (higher = fewer false positives)
     z_threshold: float = 4.0
+    
+    # Use position-independent (robust) hashing instead of position-dependent
+    # Position-independent: survives word deletion/insertion
+    # Position-dependent: slightly stronger signal but fragile to edits
+    robust_mode: bool = False
 
 
 def _hash_to_seed(key: str, position: int) -> int:
@@ -55,6 +60,23 @@ def _hash_to_seed(key: str, position: int) -> int:
     data = f"{key}:{position}".encode("utf-8")
     h = hashlib.sha256(data).hexdigest()
     return int(h[:8], 16)
+
+
+def _hash_token_to_seed(key: str, token_id: int) -> int:
+    """Hash secret key + token_id for position-independent watermarking."""
+    data = f"{key}:tok:{token_id}".encode("utf-8")
+    h = hashlib.sha256(data).hexdigest()
+    return int(h[:8], 16)
+
+
+def is_green_token_robust(token_id: int, config: "WatermarkConfig") -> bool:
+    """
+    Position-independent green check: token's greenness depends only on token_id.
+    This makes the watermark robust to word deletion/insertion attacks.
+    """
+    seed = _hash_token_to_seed(config.secret_key, token_id)
+    # Use seed to deterministically decide if green
+    return (seed % 1000) < int(config.green_fraction * 1000)
 
 
 def get_green_list(
@@ -65,27 +87,36 @@ def get_green_list(
     """
     Get the "green list" token IDs for a given position.
     
-    The green list is a random subset of the vocabulary, determined
-    by hashing the secret key + position. This makes it:
-    - Deterministic (same position always gets same green list)
-    - Unpredictable without the secret key
+    In standard mode: hash(secret_key, position) determines green list
+    In robust mode: hash(secret_key, token_id) determines each token's greenness
+    
+    Robust mode survives word deletion/insertion attacks because token greenness
+    doesn't depend on position.
     
     Returns: Boolean tensor of shape [vocab_size] where True = green token
     """
-    seed = _hash_to_seed(config.secret_key, position)
-    generator = torch.Generator().manual_seed(seed)
-    
-    # Random permutation of vocab indices
-    perm = torch.randperm(vocab_size, generator=generator)
-    
-    # First green_fraction of permutation are "green"
-    num_green = int(vocab_size * config.green_fraction)
-    green_indices = perm[:num_green]
-    
-    green_mask = torch.zeros(vocab_size, dtype=torch.bool)
-    green_mask[green_indices] = True
-    
-    return green_mask
+    if getattr(config, 'robust_mode', False):
+        # Position-independent: each token's greenness is determined by its ID only
+        green_mask = torch.zeros(vocab_size, dtype=torch.bool)
+        for tok_id in range(vocab_size):
+            green_mask[tok_id] = is_green_token_robust(tok_id, config)
+        return green_mask
+    else:
+        # Position-dependent: standard approach
+        seed = _hash_to_seed(config.secret_key, position)
+        generator = torch.Generator().manual_seed(seed)
+        
+        # Random permutation of vocab indices
+        perm = torch.randperm(vocab_size, generator=generator)
+        
+        # First green_fraction of permutation are "green"
+        num_green = int(vocab_size * config.green_fraction)
+        green_indices = perm[:num_green]
+        
+        green_mask = torch.zeros(vocab_size, dtype=torch.bool)
+        green_mask[green_indices] = True
+        
+        return green_mask
 
 
 def apply_watermark_bias(
@@ -356,17 +387,28 @@ def detect_watermark(
     vocab_size = tokenizer.vocab_size
     
     # Count green tokens at each position
+    # In robust mode, position doesn't matter - just check if token is green
     green_count = 0
     total_count = 0
     
-    for pos, tok_id in enumerate(token_ids):
-        if tok_id in special_ids:
-            continue
-        
-        green_mask = get_green_list(vocab_size, pos, config)
-        if green_mask[tok_id]:
-            green_count += 1
-        total_count += 1
+    if getattr(config, 'robust_mode', False):
+        # Position-independent detection
+        for tok_id in token_ids:
+            if tok_id in special_ids:
+                continue
+            if is_green_token_robust(tok_id, config):
+                green_count += 1
+            total_count += 1
+    else:
+        # Position-dependent detection
+        for pos, tok_id in enumerate(token_ids):
+            if tok_id in special_ids:
+                continue
+            
+            green_mask = get_green_list(vocab_size, pos, config)
+            if green_mask[tok_id]:
+                green_count += 1
+            total_count += 1
     
     if total_count < config.min_tokens_for_detection:
         return {
