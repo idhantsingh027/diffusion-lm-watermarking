@@ -25,7 +25,9 @@
 
 <br>
 
-## 🚀 Features
+## Features
+
+A principled approach to watermarking discrete diffusion language models. This project implements a complete pipeline for training D3PM-style language models and embedding statistically detectable watermarks during generation.
 
 - **D3PM-style forward process** using token masking
 - **Timestep-conditioned denoiser** for $p_\theta(x_0 \mid x_t, t)$
@@ -34,41 +36,140 @@
 - **Mask inspection** to visualize forward corruption on real data
 - **Comprehensive evaluation**: reconstruction accuracy + GPT-2 perplexity metrics
 
-## 🛠️ Installation
+<p align="center">
+  <img src="figures/3_pareto_tradeoff.png" width="60%" alt="Detection vs Quality Tradeoff" />
+</p>
 
-1. Clone the repository:
+## Installation
+
 ```bash
 git clone https://github.com/idhantsingh027/diffusion-lm-watermarking.git
 cd diffusion-lm-watermarking
-```
-
-2. Create and activate a virtual environment (recommended):
-```bash
-python -m venv .venv
-# Windows
-.\.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-```
-
-3. Install dependencies:
-```bash
 pip install -r requirements.txt
 ```
 
-### Google Colab (GPU)
+## Download Checkpoints
 
-If you're running in Colab and want GPU training, install the CUDA-enabled PyTorch build:
-```bash
-pip install -r requirements-colab.txt
+Pre-trained model checkpoints are available on Google Drive: 📁 **[Download Checkpoints](https://drive.google.com/drive/folders/1rfsvTEdzlpV9on5X0RGaGCXSlhyglHz-?usp=sharing)**
+
+Place the downloaded `checkpoints/` folder in the repository root.
+
+## Generate Watermarked Text
+
+```python
+from transformers import BertTokenizerFast
+from models.diffusion_lm import TimestepConditionedBertForMaskedLM
+from models.watermark import WatermarkConfig, generate_d3pm_watermarked, detect_watermark
+
+# Load model
+tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+model = TimestepConditionedBertForMaskedLM.from_pretrained(
+    "checkpoints/dlm-stage3/best",
+    num_steps=100,
+    device="cuda"  # or "mps" for Mac
+)
+
+# Configure watermark
+config = WatermarkConfig(
+    secret_key="my-secret-key",
+    bias_strength=3.0,  # Sweet spot: 93% detection, minimal quality loss
+)
+
+# Generate
+text = generate_d3pm_watermarked(
+    model, tokenizer,
+    length=64, steps=100,
+    min_mask_prob=0.15, max_mask_prob=0.50,
+    device="cuda", temperature=0.7, top_k=20,
+    config=config,
+)
+print(text)
+
+# Detect
+result = detect_watermark(text, tokenizer, config)
+print(f"Watermarked: {result['is_watermarked']} (z={result['z_score']:.2f})")
 ```
 
-Sanity check (should print `True` and a CUDA version):
-```bash
-python -c "import torch; print('cuda_available=', torch.cuda.is_available(), 'torch_cuda=', torch.version.cuda)"
+## How It Works
+
+### 1. Diffusion Language Model
+
+We use a **D3PM-style discrete diffusion** process:
+- **Forward process**: Progressively mask tokens with probability $p_t$
+- **Reverse process**: Denoise by predicting masked tokens conditioned on timestep $t$
+- **Architecture**: BERT with learned timestep embeddings
+
+Training uses a **3-stage curriculum**:
+| Stage | Mask Prob | Epochs | Purpose |
+|-------|-----------|--------|---------|
+| 1 | 15% | 5 | Learn basic reconstruction |
+| 2 | 50% | 8 | Handle moderate noise |
+| 3 | 75% | 6 | Master high noise levels |
+
+### 2. Watermark Embedding
+
+During generation, we bias the model toward "green list" tokens:
+
+1. **Hash** `(secret_key, position)` → deterministic green/red vocab split (50/50)
+2. **Bias** green tokens by adding to their logits before sampling
+3. **Result**: Generated text has ~65-70% green tokens instead of 50%
+
+### 3. Watermark Detection
+
+Use a **z-test** to detect statistically significant green token excess:
+
+```
+z = (observed_green - expected) / std_dev
 ```
 
-## 💻 Usage
+- **Threshold**: z > 4.0 → watermarked (p < 0.00003 false positive rate)
+- **Typical watermarked z-score**: 6-7
+
+## Results
+
+### 1. Detection Performance
+
+| Attack | Detection Rate |
+|--------|---------------|
+| No attack | 95% |
+| Truncate 50% | 87% |
+| Word swap 20% | 80% |
+| Word deletion 20% (standard) | 3% |
+| Word deletion 20% (robust mode) | **100%** |
+
+<p align="center">
+  <img src="figures/1_robustness_analysis.png" width="80%" alt="Robustness Analysis" />
+</p>
+
+### 2. Quality vs Detection Tradeoff
+
+| Bias Strength | Detection | PPL | Recommendation |
+|--------------|-----------|-----|----------------|
+| 1.0 | 0% | 62 | Too weak |
+| **3.0** | **93%** | **65** | **Optimal** |
+| 5.0 | 100% | 88 | Quality drop |
+
+<p align="center">
+  <img src="figures/2_tradeoff_analysis.png" width="80%" alt="Tradeoff Analysis" />
+</p>
+
+### 3. Robust Mode
+
+Standard watermarking fails under word deletion (positions shift). **Robust mode** uses position-independent hashing:
+
+```python
+config = WatermarkConfig(
+    secret_key="my-key",
+    bias_strength=5.0,
+    robust_mode=True,  # Survives word deletion
+)
+```
+
+<p align="center">
+  <img src="figures//4_robust_mode_comparison.png" width="80%" alt="Robust Mode" />
+</p>
+
+## Usage
 
 ### 1) Quick smoke-test training
 This is a **local sanity check** (CPU, a couple of batches). Full training is intended to run in **Google Colab**.
@@ -243,41 +344,37 @@ With optimized decoding parameters, Stage 3 achieves significantly better fluenc
 
 Key improvement: **PPL dropped from ~130 to ~59** (55% reduction) by using lower temperature and smaller top_k.
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 diffusion-lm-watermarking/
-├── data/
-│   └── dataset.py
-├── docs/
-│   └── problem-statement.md
 ├── models/
-│   └── diffusion_lm.py
+│   ├── diffusion_lm.py          # D3PM model architecture + training/sampling
+│   └── watermark.py             # Watermarking: generation, detection, evaluation
+├── data/
+│   └── dataset.py               # WikiText-2 data loading + sentence filtering
 ├── notebooks/
-│   └── training_v1.ipynb
-│   └── training_v2.ipynb
-│   └── training_v3.ipynb
-│   └── training_v4.ipynb
-├── requirements.txt
-└── README.md
+│   ├── training_v1.ipynb        # Initial prototype: basic BERT-MLM + masking
+│   ├── training_v2.ipynb        # Added timestep conditioning + D3PM sampling
+│   ├── training_v3.ipynb        # 2-stage curriculum (15% → 50% masking)
+│   └── training_v4.ipynb        # 3-stage curriculum + watermarking (MAIN)
+├── docs/
+│   └── problem-statement.md     # Full technical writeup with theory
+├── figures/                     # Result visualizations (robustness, tradeoffs)
+├── checkpoints/                 # Model weights (download from Drive)
+└── requirements.txt
 ```
 
-## 🧪 Notes
-
-- This repo currently implements a **D3PM-style masking diffusion baseline**.
-- Model weights under `checkpoints/` are large and stored via **Git LFS**. If you clone and see pointer files, install Git LFS (`git lfs install`) and run `git lfs pull`.
-- Watermarking integration (logit bias + detection) is intended as the next step.
-
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome. Please open an issue or pull request with clear details.
 
-## 👨‍💻 Author
+## Author
 
 **Idhant Singh**
 - GitHub: [@idhantsingh027](https://github.com/idhantsingh027)
 
-## 🌟 Acknowledgments
+## Acknowledgments
 
 - Diffusion LM literature (D3PM, Masked diffusion)
 - **MDLM**: Sahoo et al., "Simple and Effective Masked Diffusion Language Models" (NeurIPS 2024)
